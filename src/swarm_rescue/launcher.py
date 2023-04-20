@@ -5,17 +5,23 @@ from spg_overlay.utils.team_info import TeamInfo
 from spg_overlay.gui_map.gui_sr import GuiSR
 
 from maps.map_intermediate_01 import MyMapIntermediate01
+from maps.map_random import MyMapRandom
 from maps.map_complete_01 import MyMapComplete01
 from maps.map_complete_02 import MyMapComplete02
 
-from solutions.my_drone_random import MyDroneRandom
+from solutions.version1 import MyDroneV1
+from solutions.version2 import MyDroneV2
+from solutions.version3 import MyDroneV3
+from solutions.version4 import MyDroneV4
+from solutions.version5 import MyDroneV5
+from solutions.my_drone_lidar_communication import MyDroneLidarCommunication
 
 
 class MyMap(MyMapIntermediate01):
     pass
 
 
-class MyDrone(MyDroneRandom):
+class MyDrone(MyDroneV5):
     pass
 
 

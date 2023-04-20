@@ -3,13 +3,19 @@ from copy import deepcopy
 from typing import Optional
 
 import numpy as np
+import heapq
+import random
 
 from spg_overlay.entities.drone_abstract import DroneAbstract
+from spg_overlay.entities.drone_distance_sensors import DroneSemanticSensor
 from spg_overlay.utils.misc_data import MiscData
 from spg_overlay.utils.utils import normalize_angle, sign
 
+from solutions.grid import GridMap, a_star
 
-class MyDroneLidarCommunication(DroneAbstract):
+
+
+class MyDroneV2(DroneAbstract):
     def __init__(self,
                  identifier: Optional[int] = None,
                  misc_data: Optional[MiscData] = None,
@@ -18,6 +24,9 @@ class MyDroneLidarCommunication(DroneAbstract):
                          misc_data=misc_data,
                          should_display_lidar=False,
                          **kwargs)
+        self.grid = GridMap(size=misc_data.size_area, resolution=25)
+        self.target_cell = None  # La cellule cible que le drone doit atteindre
+        self.path_to_target = []  # Le chemin à suivre pour atteindre la cible
 
     def define_message_for_all(self):
         """
@@ -26,6 +35,7 @@ class MyDroneLidarCommunication(DroneAbstract):
         msg_data = (self.identifier,
                     (self.measured_gps_position(), self.measured_compass_angle()))
         return msg_data
+
 
     def control(self):
         """
@@ -36,24 +46,30 @@ class MyDroneLidarCommunication(DroneAbstract):
         position to stay at a certain distance and have the same orientation.
         """
 
-        gps_pos = self.measured_gps_position()
-        if(np.isnan(gps_pos[0]) or np.isnan(gps_pos[1])): print(gps_pos)
-
         command = {"forward": 0.0,
                    "lateral": 0.0,
                    "rotation": 0.0}
 
-        command_lidar, collision_lidar = self.process_lidar_sensor(
+        command_lidar, collision_lidar, walls = self.process_lidar_sensor(
             self.lidar())
+        found_rescue_center, command_semantic, rescue_center_points = self.process_semantic_sensor(self.semantic())
         found, command_comm = self.process_communication_sensor()
+
+        walls.extend(rescue_center_points)
 
         alpha = 0.4
         alpha_rot = 0.75
 
+        gps_pos = self.measured_gps_position()
+
+
+        grid_pos = self.grid.gps_to_grid_cell(gps_pos)
+
+        
         if collision_lidar:
             alpha_rot = 0.1
 
-
+        """
         # The final command  is a combination of 2 commands
         command["forward"] = \
             alpha * command_comm["forward"] \
@@ -64,16 +80,89 @@ class MyDroneLidarCommunication(DroneAbstract):
         command["rotation"] = \
             alpha_rot * command_comm["rotation"] \
             + (1 - alpha_rot) * command_lidar["rotation"]
+        """
+
+        
+
+        
+        
+        if ((np.isnan(gps_pos[0]) or np.isnan(gps_pos[1])) == False):
+            # Mettre à jour le danger de la cellule actuelle
+            self.grid.update_cell_danger(grid_pos[0], grid_pos[1], danger=-1)
+
+
+            # Si le drone n'a pas encore de cible, il en choisit une au hasard
+            while(self.target_cell is None or self.path_to_target is None):
+                self.target_cell = self.grid.random_cell_weighted_by_danger()
+                self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1])
+
+
+            if (len(walls) > 0):
+                all_walls_detected = True
+                for i in range(len(walls)):
+                    wall_cell = self.grid.gps_to_grid_cell(walls[i])
+                    if (self.grid.map[wall_cell[0]][wall_cell[1]] != 1):
+                        self.grid.update_wall(wall_cell[0], wall_cell[1])
+                        all_walls_detected = False
+                if not all_walls_detected:
+                    while(True):
+                        self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1])
+                        if not (self.path_to_target is None):
+                            break
+                        self.target_cell = self.grid.random_cell_weighted_by_danger()
+                
+            # Si le drone est proche de sa cible, il en choisit une nouvelle au hasard
+            distance_to_target = np.linalg.norm(np.array(gps_pos) - np.array(self.target_cell))
+            if distance_to_target < 10:
+                self.target_cell = self.grid.random_cell_weighted_by_danger()
+                self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1])
+
+
+
+            # Le drone suit le chemin vers sa cible
+            if len(self.path_to_target) > 0:
+                target_direction = np.array(self.grid.grid_cell_to_gps(self.path_to_target[0])) - np.array(gps_pos)
+                target_direction_norm = target_direction / np.linalg.norm(target_direction)
+                angle_to_target = np.arctan2(target_direction_norm[1], target_direction_norm[0])
+
+                # Calcul de l'intensité de la rotation en fonction de l'angle uniquement
+                angle_diff = angle_to_target - self.measured_compass_angle()[0]
+                if angle_diff < -np.pi:
+                    angle_diff += 2 * np.pi
+                elif angle_diff > np.pi:
+                    angle_diff -= 2 * np.pi
+                rotation_intensity = 0.3 * sign(angle_diff) + angle_diff / np.pi
+
+
+                # Affectation de la commande de rotation en fonction de l'intensité calculée
+                if rotation_intensity > 0:
+                    command["rotation"] = min(rotation_intensity, 1)
+                else:
+                    command["rotation"] = max(rotation_intensity, -1)
+
+                command["forward"] = min(1, 0.2 + np.linalg.norm(target_direction)/200)
+                print(command["forward"])
+                if np.linalg.norm(target_direction) < ( (self.grid.size[0] / self.grid.cols) / 2):
+                    self.path_to_target.pop(0)
+
+            else:
+                while(True):
+                    self.target_cell = self.grid.random_cell_weighted_by_danger()
+                    self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1])
+                    if not (self.path_to_target is None):
+                        break
+                    
 
         return command
 
     def process_lidar_sensor(self, the_lidar_sensor):
         command = {"forward": 1.0,
-                   "lateral": 0.0,
-                   "rotation": 0.0}
+                "lateral": 0.0,
+                "rotation": 0.0}
         angular_vel_controller = 1.0
 
         values = the_lidar_sensor.get_sensor_values()
+        
 
         if values is None:
             return command, False
@@ -84,12 +173,20 @@ class MyDroneLidarCommunication(DroneAbstract):
         far_angle_raw = 0
         near_angle_raw = 0
         min_dist = 1000
+        collision_points = []
+        
         if size != 0:
             # far_angle_raw : angle with the longer distance
             far_angle_raw = ray_angles[np.argmax(values)]
             min_dist = min(values)
             # near_angle_raw : angle with the nearest distance
             near_angle_raw = ray_angles[np.argmin(values)]
+
+            for i in range(size):
+                if values[i] < 200:
+                    x = self.measured_gps_position()[0] + values[i] * np.cos(ray_angles[i] + self.measured_compass_angle())
+                    y = self.measured_gps_position()[1] + values[i] * np.sin(ray_angles[i] + self.measured_compass_angle())
+                    collision_points.append((x, y))
 
         far_angle = far_angle_raw
         # If far_angle_raw is small then far_angle = 0
@@ -99,6 +196,7 @@ class MyDroneLidarCommunication(DroneAbstract):
         near_angle = near_angle_raw
         far_angle = normalize_angle(far_angle)
 
+        """
         # The drone will turn toward the zone with the more space ahead
         if size != 0:
             if far_angle > 0:
@@ -107,6 +205,7 @@ class MyDroneLidarCommunication(DroneAbstract):
                 command["rotation"] = 0
             else:
                 command["rotation"] = -angular_vel_controller
+        
 
         # If near a wall then 'collision' is True and the drone tries to turn its back to the wall
         collision = False
@@ -116,8 +215,59 @@ class MyDroneLidarCommunication(DroneAbstract):
                 command["rotation"] = -angular_vel_controller
             else:
                 command["rotation"] = angular_vel_controller
+        """
 
-        return command, collision
+        return command, False, collision_points
+    
+
+
+    def process_semantic_sensor(self, the_semantic_sensor):
+        """
+        According to his state in the state machine, the Drone will move towards a wound person or the rescue center
+        """
+        command = {"forward": 0.5,
+                   "lateral": 0.0,
+                   "rotation": 0.0}
+        angular_vel_controller_max = 1.0
+    
+        detection_semantic = the_semantic_sensor.get_sensor_values()
+        best_angle = 1000
+    
+        found_rescue_center = False
+        is_near = False
+        rescue_center_points = []
+        if detection_semantic:
+            for data in detection_semantic:
+                if data.entity_type == DroneSemanticSensor.TypeEntity.RESCUE_CENTER:
+                    found_rescue_center = True
+                    best_angle = data.angle
+                    is_near = (data.distance < 30)
+                    x = self.measured_gps_position()[0] + data.distance * np.cos(data.angle + self.measured_compass_angle())
+                    y = self.measured_gps_position()[1] + data.distance * np.sin(data.angle + self.measured_compass_angle())
+                    rescue_center_points.append((x, y))
+    
+        """
+        if found_rescue_center:
+            # simple P controller
+            # The robot will turn until best_angle is 0
+            kp = 2.0
+            a = kp * best_angle
+            a = min(a, 1.0)
+            a = max(a, -1.0)
+            command["rotation"] = a * angular_vel_controller_max
+    
+            # reduce speed if we need to turn a lot
+            if abs(a) == 1:
+                command["forward"] = 0.2
+    
+        if found_rescue_center and is_near:
+            command["forward"] = 0
+            command["rotation"] = random.uniform(0.1, 1)
+        """
+    
+        return found_rescue_center, command, rescue_center_points
+    
+
 
     def process_communication_sensor(self):
         found_drone = False

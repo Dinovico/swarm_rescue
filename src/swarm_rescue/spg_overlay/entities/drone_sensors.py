@@ -194,6 +194,8 @@ class DroneOdometer(InternalSensor):
         noisy_theta = normalize_angle(noisy_theta)
 
         self._values = np.array([noisy_dist_travel, noisy_alpha, noisy_theta])
+        #self._values = np.array([self._values[0], self._values[1], self._values[2]])
+
 
     def is_disabled(self):
         return self._disabled
