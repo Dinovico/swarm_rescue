@@ -83,6 +83,7 @@ class MyDroneV5(DroneAbstract):
         elif self.state is self.Activity.GRASPING_WOUNDED and self.base.grasper.grasped_entities:
             self.state = self.state.DROPPING_AT_RESCUE_CENTER
             self.currently_rescuing = False
+            print(self.grid.map)
 
         elif self.state is self.Activity.GRASPING_WOUNDED and not found_wounded:
             self.state = self.state.EXPLORING
@@ -142,9 +143,11 @@ class MyDroneV5(DroneAbstract):
 
 
             # Si le drone n'a pas encore de cible, il en choisit une au hasard
+            k = 0
             while(self.target_cell is None or self.path_to_target is None):
-                self.target_cell = self.grid.random_cell_weighted_by_danger()
-                self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1])
+                self.target_cell = self.grid.random_cell_weighted_by_danger(self.grid.gps_to_grid_cell(self.last_position), 7 + k//20)
+                self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1], 9 + k//20)
+                k += 1
 
 
             if (len(walls) > 0):
@@ -160,10 +163,10 @@ class MyDroneV5(DroneAbstract):
                         if (wall_cell in self.path_to_target):
                             k = 0
                             while(True):
-                                self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1])
+                                self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1], 9 + k//20)
                                 if not (self.path_to_target is None):
                                     break
-                                self.target_cell = self.grid.random_cell_weighted_by_danger()
+                                self.target_cell = self.grid.random_cell_weighted_by_danger(self.grid.gps_to_grid_cell(self.last_position), 7 + k//20)
                                 k += 1
 
             if (len(rescue_center_points) > 0):
@@ -206,11 +209,13 @@ class MyDroneV5(DroneAbstract):
 
 
             else:
+                k = 0
                 while(True):
-                    self.target_cell = self.grid.random_cell_weighted_by_danger()
-                    self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1])
+                    self.target_cell = self.grid.random_cell_weighted_by_danger(self.grid.gps_to_grid_cell(self.last_position), 7 + k//20)
+                    self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1], 9 + k//20)
                     if not (self.path_to_target is None):
                         break
+                    k += 1
                     
 
         return found_wounded, command
@@ -246,7 +251,7 @@ class MyDroneV5(DroneAbstract):
 
         grid_pos = self.grid.gps_to_grid_cell(gps_pos)
 
-        self.grid.update_cell_danger(grid_pos[0], grid_pos[1], danger=-1)
+        self.grid.update_cell_danger(grid_pos[0], grid_pos[1], danger=-1, override=True)
 
         command = command_semantic
         command["grasper"] = 1
@@ -281,6 +286,7 @@ class MyDroneV5(DroneAbstract):
             self.last_position = gps_pos
             self.last_angle = self.measured_compass_angle()
     
+        self.last_position += np.array([np.cos(self.last_angle[0]) * 15, np.sin(self.last_angle[0]) * 15]) 
         grid_pos = self.grid.gps_to_grid_cell(self.last_position)
     
         if not self.currently_rescuing:
@@ -297,7 +303,25 @@ class MyDroneV5(DroneAbstract):
                         self.currently_rescuing = True
                         break
                 
-    
+        command_lidar, collision_lidar, walls = self.process_lidar_sensor(self.lidar())
+        found_wounded, found_rescue_center, command_semantic, rescue_center_points, wounded_person_points = self.process_semantic_sensor(self.semantic())
+
+        
+        if (len(walls) > 0):
+            for i in range(len(walls)):
+                wall_cell = self.grid.gps_to_grid_cell(walls[i])
+                if (self.grid.map[wall_cell[0]][wall_cell[1]] != 1 
+                        and wall_cell not in wounded_person_points
+                        and (wall_cell[0]+1,wall_cell[1]) not in wounded_person_points
+                        and (wall_cell[0]-1,wall_cell[1]) not in wounded_person_points
+                        and (wall_cell[0],wall_cell[1]+1) not in wounded_person_points
+                        and (wall_cell[0],wall_cell[1]-1) not in wounded_person_points):
+                    self.grid.update_wall(wall_cell[0], wall_cell[1])
+                    if (wall_cell in self.path_to_target):
+                        self.currently_rescuing = False
+
+        self.grid.update_cell_danger(grid_pos[0], grid_pos[1], -1)
+
         # Le drone suit le chemin vers sa cible
         if len(self.path_to_target) > 0:
             target_direction = np.array(self.grid.grid_cell_to_gps(self.path_to_target[0])) - np.array(self.last_position)

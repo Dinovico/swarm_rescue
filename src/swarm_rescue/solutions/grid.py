@@ -63,32 +63,12 @@ class GridMap:
                     dist = max(abs(i-x), abs(j-y))
                     self.map[i][j] = max(min(self.map[i][j] + (danger * ((1 - abs(self.map[i][j])) / (dist + 1))), 1), -1)
 
-    """
-    def random_cell_weighted_by_danger(self):
-        # Création d'une liste contenant toutes les cellules de la grille avec leur poids respectif
-        cells = []
-        for i in range(self.rows):
-            for j in range(self.cols):
-                weight = (1 - abs(self.map[i][j]))**3
-                cells.append(((i, j), weight))
-        
-        # Tirage au sort d'une cellule pondérée par son poids
-        total_weight = sum(weight for cell, weight in cells)
-        rand = random.uniform(0, total_weight)
-        for cell, weight in cells:
-            if rand < weight:
-                return cell
-            rand -= weight
-        
-        # Si on arrive ici, c'est qu'il y a eu une erreur (par exemple, toutes les cellules ont un poids nul)
-        raise Exception("Unable to select a random cell weighted by danger")
-    """
 
-    def random_cell_weighted_by_danger(self):
+    def random_cell_weighted_by_danger(self, current_pos, max_distance):
         # Création d'une liste contenant toutes les cellules de la grille avec leur poids respectif
         cells = []
-        for i in range(self.rows):
-            for j in range(self.cols):
+        for i in range(max(0, current_pos[0]-max_distance), min(self.rows, current_pos[0]+max_distance+1)):
+            for j in range(max(0, current_pos[1]-max_distance), min(self.cols, current_pos[1]+max_distance+1)):
                 if self.map[i][j] == -1:
                     continue
                 weight_sum = 0
@@ -103,17 +83,20 @@ class GridMap:
                     avg_weight = 0
                 weight = avg_weight**5
                 cells.append(((i, j), weight))
-    
+        
         # Tirage au sort d'une cellule pondérée par son poids
         total_weight = sum(weight for cell, weight in cells)
         rand = random.uniform(0, total_weight)
         for cell, weight in cells:
             if rand < weight:
+                print(cell)
                 return cell
             rand -= weight
-    
+        
         # Si on arrive ici, c'est qu'il y a eu une erreur (par exemple, toutes les cellules ont un poids nul)
         raise Exception("Unable to select a random cell weighted by danger")
+
+    
     
     
     def gps_to_grid_cell(self, gps_pos):
@@ -155,7 +138,7 @@ def closest_rescue_center_index(rescue_centers, x, y):
 
 
 
-
+"""
 def a_star(grid_map, start_x, start_y, end_x, end_y):
     # Création des noeuds de départ et d'arrivée
     start_node = Node(start_x, start_y)
@@ -219,10 +202,77 @@ def a_star(grid_map, start_x, start_y, end_x, end_y):
     
     # Si on n'a pas trouvé de chemin, on renvoie None
     return None
+"""
+
+
+def a_star(grid_map, start_x, start_y, end_x, end_y, max_distance):
+    # Création des noeuds de départ et d'arrivée
+    start_node = Node(start_x, start_y)
+    end_node = Node(end_x, end_y)
+    
+    # Initialisation de la liste ouverte et de l'ensemble fermé
+    open_list = [start_node]
+    closed_set = set()
+
+    
+    # Boucle principale de l'algorithme A*
+    while open_list:
+        # Récupération du noeud ayant le coût total (f) le plus faible dans la liste ouverte
+        current_node = heapq.heappop(open_list)
+        
+        # Si on est arrivé à destination, on reconstruit le chemin en remontant les parents de chaque noeud
+        if current_node.x == end_node.x and current_node.y == end_node.y:
+            path = []
+            while current_node.parent:
+                path.append((current_node.x, current_node.y))
+                current_node = current_node.parent
+            path.append((start_x, start_y))
+            return list(reversed(path))
+        
+        # Ajout du noeud courant à l'ensemble fermé
+        closed_set.add((current_node.x, current_node.y))
+        
+        # Exploration des voisins du noeud courant
+        for neighbor_x, neighbor_y in [(current_node.x-1, current_node.y), (current_node.x+1, current_node.y), (current_node.x, current_node.y-1), (current_node.x, current_node.y+1)]:
+            # Vérification que le voisin est dans la grille et à une distance inférieure ou égale à max_distance
+            if neighbor_x < 0 or neighbor_x >= grid_map.rows or neighbor_y < 0 or neighbor_y >= grid_map.cols or abs(neighbor_x - start_x) + abs(neighbor_y - start_y) > max_distance:
+                continue
+            # Vérification que le voisin n'est pas un obstacle
+            if grid_map.map[neighbor_x][neighbor_y] == 1 and (neighbor_x != end_node.x or neighbor_y != end_node.y):
+                continue
+            # Vérification que le voisin n'a pas déjà été exploré
+            if (neighbor_x, neighbor_y) in closed_set:
+                continue
+            
+            # Création d'un nouveau noeud pour le voisin
+            neighbor_node = Node(neighbor_x, neighbor_y)
+            # Calcul du coût de déplacement depuis le noeud courant
+            neighbor_node.g = current_node.g + 1 + (1 + grid_map.map[neighbor_x][neighbor_y])
+            # Calcul de la valeur heuristique pour estimer le coût restant jusqu'à l'arrivée
+            neighbor_node.h = 1 + min([grid_map.map[nx][ny] for nx, ny in [(neighbor_x-1, neighbor_y), (neighbor_x+1, neighbor_y), (neighbor_x, neighbor_y-1), (neighbor_x, neighbor_y+1)] if 0 <= nx < grid_map.rows and 0 <= ny < grid_map.cols])
+            # Calcul du coût total (f)
+            neighbor_node.f = neighbor_node.g + (1 + neighbor_node.h) * (abs(end_x-neighbor_x) + abs(end_y-neighbor_y))
+            # Mise à jour du parent du noeud voisin
+            neighbor_node.parent = current_node
+            
+            # Si le voisin est déjà dans la liste ouverte, on met à jour ses coûts et son parent si nécessaire
+            if neighbor_node in open_list:
+                existing_node = open_list[open_list.index(neighbor_node)]
+                if neighbor_node.g < existing_node.g:
+                    existing_node.g = neighbor_node.g
+                    existing_node.f = neighbor_node.f
+                    existing_node.parent = neighbor_node.parent
+            # Sinon, on ajoute le voisin à la liste ouverte
+            else:
+                heapq.heappush(open_list, neighbor_node)
+    
+    # Si on n'a pas trouvé de chemin, on renvoie None
+    return None
 
 
 
 def a_star_rescue(grid_map, start_x, start_y, end_x, end_y):
+    grid_map.update_cell_danger(start_x, start_y, -1, override=True)
     # Création des noeuds de départ et d'arrivée
     start_node = Node(start_x, start_y)
     end_node = Node(end_x, end_y)
@@ -255,7 +305,7 @@ def a_star_rescue(grid_map, start_x, start_y, end_x, end_y):
             if neighbor_x < 0 or neighbor_x >= grid_map.rows or neighbor_y < 0 or neighbor_y >= grid_map.cols:
                 continue
             # Vérification que le voisin a une valeur de danger égale à -1
-            if grid_map.map[neighbor_x][neighbor_y] > -0.85 and (neighbor_x != end_node.x or neighbor_y != end_node.y):
+            if grid_map.map[neighbor_x][neighbor_y] > -0.95 and (neighbor_x != end_node.x or neighbor_y != end_node.y):
                 continue
             # Vérification que le voisin n'a pas déjà été exploré
             if (neighbor_x, neighbor_y) in closed_set:
