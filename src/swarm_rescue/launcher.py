@@ -8,6 +8,7 @@ from maps.map_intermediate_01 import MyMapIntermediate01
 from maps.map_random import MyMapRandom
 from maps.map_complete_01 import MyMapComplete01
 from maps.map_complete_02 import MyMapComplete02
+from maps.map_final import MyMapFinal
 
 from solutions.version1 import MyDroneV1
 from solutions.version2 import MyDroneV2
@@ -17,7 +18,7 @@ from solutions.version5 import MyDroneV5
 from solutions.my_drone_lidar_communication import MyDroneLidarCommunication
 
 
-class MyMap(MyMapIntermediate01):
+class MyMap(MyMapFinal):
     pass
 
 

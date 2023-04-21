@@ -198,11 +198,11 @@ def a_star(grid_map, start_x, start_y, end_x, end_y):
             # Création d'un nouveau noeud pour le voisin
             neighbor_node = Node(neighbor_x, neighbor_y)
             # Calcul du coût de déplacement depuis le noeud courant
-            neighbor_node.g = current_node.g + 1 + (1 + grid_map.map[neighbor_x][neighbor_y])**2
+            neighbor_node.g = current_node.g + 1 + (1 + grid_map.map[neighbor_x][neighbor_y])
             # Calcul de la valeur heuristique pour estimer le coût restant jusqu'à l'arrivée
             neighbor_node.h = 1 + min([grid_map.map[nx][ny] for nx, ny in [(neighbor_x-1, neighbor_y), (neighbor_x+1, neighbor_y), (neighbor_x, neighbor_y-1), (neighbor_x, neighbor_y+1)] if 0 <= nx < grid_map.rows and 0 <= ny < grid_map.cols])
             # Calcul du coût total (f)
-            neighbor_node.f = neighbor_node.g + (1 + neighbor_node.h**2) * (abs(end_x-neighbor_x) + abs(end_y-neighbor_y))
+            neighbor_node.f = neighbor_node.g + (1 + neighbor_node.h) * (abs(end_x-neighbor_x) + abs(end_y-neighbor_y))
             # Mise à jour du parent du noeud voisin
             neighbor_node.parent = current_node
             
