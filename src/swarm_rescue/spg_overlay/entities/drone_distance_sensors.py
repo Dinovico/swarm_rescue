@@ -56,7 +56,8 @@ class DroneDistanceSensor(DistanceSensor):
         return self._disabled
 
     def _apply_noise(self):
-        self._values = self._noise_model.add_noise(self._values)
+        #self._values = self._noise_model.add_noise(self._values)
+        return
 
     def draw(self):
         hitpoints_ok = not isinstance(self._hitpoints, int)
@@ -181,7 +182,7 @@ class DroneSemanticSensor(SemanticSensor):
     def _compute_raw_sensor(self, *_):
         super()._compute_raw_sensor()
 
-        id_detections = self._values[:, 0].astype(np.int)
+        id_detections = self._values[:, 0].astype(np.int_)
         distances = self._values[:, 1]
 
         new_values = []
@@ -255,7 +256,7 @@ class DroneSemanticSensor(SemanticSensor):
                 entity_type=data.entity_type,
                 grasped=data.grasped)
 
-            self._values[index] = new_data
+            self._values[index] = self._values[index]
 
     def draw(self):
         hitpoints_ok = not isinstance(self._hitpoints, int)

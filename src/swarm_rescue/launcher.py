@@ -10,11 +10,10 @@ from maps.map_complete_01 import MyMapComplete01
 from maps.map_complete_02 import MyMapComplete02
 from maps.map_final import MyMapFinal
 
-from solutions.version1 import MyDroneV1
-from solutions.version2 import MyDroneV2
-from solutions.version3 import MyDroneV3
-from solutions.version4 import MyDroneV4
+
 from solutions.version5 import MyDroneV5
+from solutions.version6 import MyDroneV6
+
 from solutions.my_drone_lidar_communication import MyDroneLidarCommunication
 
 
@@ -46,7 +45,7 @@ class Launcher:
                                           real_time_limit=self.real_time_limit,
                                           total_number_wounded_persons=self.number_wounded_persons)
 
-        self.save_data = SaveData(self.team_info, disabled=True)
+        self.save_data = SaveData(self.team_info, disabled=False)
         self.real_time_limit_reached = False
         self.video_capture_enabled = True
         self.video_capture_enabled &= not self.save_data.disabled

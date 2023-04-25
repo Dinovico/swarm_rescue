@@ -12,14 +12,14 @@ from spg_overlay.entities.drone_distance_sensors import DroneSemanticSensor
 from spg_overlay.utils.misc_data import MiscData
 from spg_overlay.utils.utils import normalize_angle, sign
 
-from solutions.gridV1 import GridMap, a_star, a_star_rescue, closest_rescue_center_index
+from solutions.gridV2 import GridMap, a_star, a_star_rescue, closest_rescue_center_index, merge_grid
 
 
 
 
 
 
-class MyDroneV5(DroneAbstract):
+class MyDroneV6(DroneAbstract):
     class Activity(Enum):
         """
         All the states of the drone as a state machine
@@ -37,20 +37,26 @@ class MyDroneV5(DroneAbstract):
                          misc_data=misc_data,
                          should_display_lidar=False,
                          **kwargs)
-        self.grid = GridMap(size=misc_data.size_area, resolution=25)
+        self.grid = GridMap(size=misc_data.size_area, resolution=15)
         self.target_cell = None  # La cellule cible que le drone doit atteindre
         self.path_to_target = []  # Le chemin à suivre pour atteindre la cible
         # The state is initialized to searching wounded person
         self.state = self.Activity.EXPLORING
         self.currently_rescuing = False
+        self.step_count = 0
+        self.last_position = None
+        self.last_angle = None
 
     def define_message_for_all(self):
         """
         Define the message, the drone will send to and receive from other surrounding drones.
         """
-        msg_data = (self.identifier,
-                    (self.measured_gps_position(), self.measured_compass_angle()))
-        return msg_data
+        
+        if(self.step_count > 1):
+            msg_data = (self.identifier, self.grid, self.grid.gps_to_grid_cell(self.last_position))
+            return msg_data
+
+        return None
 
 
     def control(self):
@@ -58,10 +64,19 @@ class MyDroneV5(DroneAbstract):
                    "lateral": 0.0,
                    "rotation": 0.0,
                    "grasper": 0}
+
+        self.step_count += 1
+
+        print(self.identifier)
+
+        
+        if self.identifier == 4:
+            return self.control_master() 
+        
+
         
         ##########
         # COMMANDS FOR EACH STATE
-        # Searching randomly, but when a rescue center or wounded person is detected, we use a special command
         ##########
         if self.state is self.Activity.EXPLORING:
             found_wounded, command = self.control_explore()
@@ -83,6 +98,7 @@ class MyDroneV5(DroneAbstract):
         elif self.state is self.Activity.GRASPING_WOUNDED and self.base.grasper.grasped_entities:
             self.state = self.state.DROPPING_AT_RESCUE_CENTER
             self.currently_rescuing = False
+            print(self.identifier)
             print(self.grid.map)
 
         elif self.state is self.Activity.GRASPING_WOUNDED and not found_wounded:
@@ -90,12 +106,57 @@ class MyDroneV5(DroneAbstract):
 
         elif self.state is self.Activity.DROPPING_AT_RESCUE_CENTER and not self.base.grasper.grasped_entities:
             self.state = self.Activity.EXPLORING
+            self.path_to_target = None
             self.currently_rescuing = False
             
 
         
 
         return command
+
+    def control_master(self):
+
+        command = {"forward": 0.0,
+                   "lateral": 0.0,
+                   "rotation": 0.0,
+                   "grasper": 0}
+
+        if(self.step_count <= 2):
+            self.last_position = self.measured_gps_position()
+            self.last_angle = self.measured_compass_angle()
+
+        else:
+            gps_pos = self.measured_gps_position()
+            angle = self.measured_compass_angle()
+
+            grid_pos = self.grid.gps_to_grid_cell(gps_pos)
+
+            self.grid.update_cell_danger(grid_pos[0], grid_pos[1], -1, override=True)
+
+            target_direction = np.array(self.last_position) - np.array(gps_pos)
+            target_direction_norm = target_direction / np.linalg.norm(target_direction)
+            angle_to_target = np.arctan2(target_direction_norm[1], target_direction_norm[0])
+
+            angle_diff = angle_to_target - angle
+            if angle_diff < -np.pi:
+                angle_diff += 2 * np.pi
+            elif angle_diff > np.pi:
+                angle_diff -= 2 * np.pi
+            rotation_intensity = 0.3 * sign(angle_diff) + angle_diff / np.pi
+
+
+            if rotation_intensity > 0:
+                command["rotation"] = min(rotation_intensity, 1)
+            else:
+                command["rotation"] = max(rotation_intensity, -1)
+
+            command["forward"] = min(1, np.linalg.norm(target_direction)/100)
+
+
+        self.process_communication_sensor()
+
+        return command
+
 
 
 
@@ -105,7 +166,8 @@ class MyDroneV5(DroneAbstract):
                    "lateral": 0.0,
                    "rotation": 0.0,
                    "grasper": 0}
-        
+
+
 
         if self.gps_is_disabled():
             # Récupération des données de l'odomètre
@@ -127,14 +189,30 @@ class MyDroneV5(DroneAbstract):
         command_lidar, collision_lidar, walls = self.process_lidar_sensor(
             self.lidar())
         found_wounded, found_rescue_center, command_semantic, rescue_center_points, wounded_person_points = self.process_semantic_sensor(self.semantic())
-        found, command_comm = self.process_communication_sensor()
+        command_comm, drone_cells = self.process_communication_sensor()
 
         grid_pos = self.grid.gps_to_grid_cell(self.last_position)
 
+        n = len(drone_cells)
+        for i in range(n):
+            drone_cells.append((drone_cells[i][0]+1, drone_cells[i][1]))
+            drone_cells.append((drone_cells[i][0]+1, drone_cells[i][1]+1))
+            drone_cells.append((drone_cells[i][0]+1, drone_cells[i][1]-1))
+            drone_cells.append((drone_cells[i][0]-1, drone_cells[i][1]))
+            drone_cells.append((drone_cells[i][0]-1, drone_cells[i][1]+1))
+            drone_cells.append((drone_cells[i][0]-1, drone_cells[i][1]-1))
+            drone_cells.append((drone_cells[i][0], drone_cells[i][1]+1))
+            drone_cells.append((drone_cells[i][0], drone_cells[i][1]-1))
+            
+        for i in range(len(drone_cells)):
+            self.grid.update_cell_danger(drone_cells[i][0], drone_cells[i][1], -1)
 
 
-        for i in range(len(wounded_person_points)):
-            wounded_person_points[i] = self.grid.gps_to_grid_cell(wounded_person_points[i])
+        if(self.step_count <= 2):
+            for i in range(-1, 2):
+                for j in range(-1, 2):
+                    self.grid.update_cell_danger(grid_pos[0]+i, grid_pos[1]+j, danger=-1, override=True)
+
         
         
         if ((np.isnan(self.last_position[0]) or np.isnan(self.last_position[1])) == False):
@@ -143,11 +221,14 @@ class MyDroneV5(DroneAbstract):
 
 
             # Si le drone n'a pas encore de cible, il en choisit une au hasard
-            k = 0
             while(self.target_cell is None or self.path_to_target is None):
-                self.target_cell = self.grid.random_cell_weighted_by_danger(self.grid.gps_to_grid_cell(self.last_position), 7 + k//20)
-                self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1], 9 + k//20)
-                k += 1
+                self.target_cell = self.grid.random_cell_weighted_by_danger(((2 * (self.identifier % 2) + 1) * (self.grid.rows // 4), (2 * (self.identifier // 2) + 1) * (self.grid.cols // 4)), self.grid.rows // 4, self.grid.cols // 4)
+                while(abs(self.target_cell[0] - grid_pos[0]) + abs(self.target_cell[1] - grid_pos[1]) > max(self.grid.rows // 4, self.grid.cols // 4)):
+                    self.target_cell = ((self.target_cell[0] + grid_pos[0]) // 2, (self.target_cell[1] + grid_pos[1]) // 2)
+                k = 0
+                while(self.path_to_target is None and k < 30):
+                    self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1], (abs(grid_pos[0] - self.target_cell[0]) + abs(grid_pos[1] - self.target_cell[1]) * 2 + k))
+                    k += 1
 
 
             if (len(walls) > 0):
@@ -158,16 +239,35 @@ class MyDroneV5(DroneAbstract):
                             and (wall_cell[0]+1,wall_cell[1]) not in wounded_person_points
                             and (wall_cell[0]-1,wall_cell[1]) not in wounded_person_points
                             and (wall_cell[0],wall_cell[1]+1) not in wounded_person_points
-                            and (wall_cell[0],wall_cell[1]-1) not in wounded_person_points):
+                            and (wall_cell[0],wall_cell[1]-1) not in wounded_person_points
+                            and wall_cell not in drone_cells):
                         self.grid.update_wall(wall_cell[0], wall_cell[1])
-                        if (wall_cell in self.path_to_target):
+
+                for i in range(len(walls)):
+                    wall_cell = self.grid.gps_to_grid_cell(walls[i])
+                    if (wall_cell in self.path_to_target and wall_cell not in drone_cells):
+                        if (wall_cell == self.target_cell):
+                            self.target_cell = None
+                            self.path_to_target = None
+                            break
+                        index_of_wall = self.path_to_target.index(wall_cell)
+                        new_path = self.path_to_target[index_of_wall+2:]
+                        next_cell = self.path_to_target[index_of_wall+1]
+                        while(True):
                             k = 0
-                            while(True):
-                                self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1], 9 + k//20)
-                                if not (self.path_to_target is None):
-                                    break
-                                self.target_cell = self.grid.random_cell_weighted_by_danger(self.grid.gps_to_grid_cell(self.last_position), 7 + k//20)
+                            self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], next_cell[0], next_cell[1], (abs(grid_pos[0] - next_cell[0]) + abs(grid_pos[1] - next_cell[1]) + k))
+                            while(self.path_to_target is None and k < 30):
                                 k += 1
+                                self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], next_cell[0], next_cell[1], (abs(grid_pos[0] - next_cell[0]) + abs(grid_pos[1] - next_cell[1]) + k))
+                            if not (self.path_to_target is None):
+                                break
+                            self.target_cell = self.grid.random_cell_weighted_by_danger(((2 * (self.identifier % 2) + 1) * (self.grid.rows // 4), (2 * (self.identifier // 2) + 1) * (self.grid.cols // 4)), self.grid.rows // 4, self.grid.cols // 4)
+                            while(abs(self.target_cell[0] - grid_pos[0]) + abs(self.target_cell[1] - grid_pos[1]) > max(self.grid.rows // 4, self.grid.cols // 4)):
+                                self.target_cell = ((self.target_cell[0] + grid_pos[0]) // 2, (self.target_cell[1] + grid_pos[1]) // 2)
+                            next_cell = self.target_cell
+                            new_path = []
+                        self.path_to_target = self.path_to_target + new_path
+            
 
             if (len(rescue_center_points) > 0):
                 for i in range(len(rescue_center_points)):
@@ -178,8 +278,9 @@ class MyDroneV5(DroneAbstract):
             for i in range(len(wounded_person_points)):
                 self.grid.update_cell_danger(wounded_person_points[i][0], wounded_person_points[i][1], 0, override=True)
 
+
             # Le drone suit le chemin vers sa cible
-            if len(self.path_to_target) > 0:
+            if (self.path_to_target is not None) and (len(self.path_to_target) > 0):
                 target_direction = np.array(self.grid.grid_cell_to_gps(self.path_to_target[0])) - np.array(self.last_position)
                 target_direction_norm = target_direction / np.linalg.norm(target_direction)
                 angle_to_target = np.arctan2(target_direction_norm[1], target_direction_norm[0])
@@ -207,16 +308,21 @@ class MyDroneV5(DroneAbstract):
                     self.path_to_target.pop(0)
 
 
-
             else:
-                k = 0
                 while(True):
-                    self.target_cell = self.grid.random_cell_weighted_by_danger(self.grid.gps_to_grid_cell(self.last_position), 7 + k//20)
-                    self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1], 9 + k//20)
+                    self.target_cell = self.grid.random_cell_weighted_by_danger(((2 * (self.identifier % 2) + 1) * (self.grid.rows // 4), (2 * (self.identifier // 2) + 1) * (self.grid.cols // 4)), self.grid.rows // 4, self.grid.cols // 4)
+                    while(abs(self.target_cell[0] - grid_pos[0]) + abs(self.target_cell[1] - grid_pos[1]) > max(self.grid.rows // 4, self.grid.cols // 4)):
+                        self.target_cell = ((self.target_cell[0] + grid_pos[0]) // 2, (self.target_cell[1] + grid_pos[1]) // 2)
+                    k = 0
+                    self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1], (abs(grid_pos[0] - self.target_cell[0]) + abs(grid_pos[1] - self.target_cell[1]) + k//20))
+                    while(self.path_to_target is None and k < 30):
+                        k += 1
+                        self.path_to_target = a_star(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1], (abs(grid_pos[0] - self.target_cell[0]) + abs(grid_pos[1] - self.target_cell[1]) + k))
                     if not (self.path_to_target is None):
                         break
-                    k += 1
-                    
+               
+        if(len(self.path_to_target) > (self.grid.rows // 2 + self.grid.cols // 2)):
+            self.path_to_target = None
 
         return found_wounded, command
 
@@ -285,75 +391,109 @@ class MyDroneV5(DroneAbstract):
             gps_pos = self.measured_gps_position()
             self.last_position = gps_pos
             self.last_angle = self.measured_compass_angle()
-    
-        self.last_position += np.array([np.cos(self.last_angle[0]) * 15, np.sin(self.last_angle[0]) * 15]) 
-        grid_pos = self.grid.gps_to_grid_cell(self.last_position)
-    
-        if not self.currently_rescuing:
-            self.grid.update_cell_danger(grid_pos[0], grid_pos[1], -1, override=True)
-    
-            not_tried_rescue = self.grid.rescue_centers.copy()
-            while(True):
-                
-                index = closest_rescue_center_index(not_tried_rescue, grid_pos[0], grid_pos[1])
-                self.target_cell = not_tried_rescue.pop(index)
-                    
-                self.path_to_target = a_star_rescue(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1])
-                if not (self.path_to_target is None):
-                        self.currently_rescuing = True
-                        break
-                
-        command_lidar, collision_lidar, walls = self.process_lidar_sensor(self.lidar())
-        found_wounded, found_rescue_center, command_semantic, rescue_center_points, wounded_person_points = self.process_semantic_sensor(self.semantic())
 
         
-        if (len(walls) > 0):
-            for i in range(len(walls)):
-                wall_cell = self.grid.gps_to_grid_cell(walls[i])
-                if (self.grid.map[wall_cell[0]][wall_cell[1]] != 1 
-                        and wall_cell not in wounded_person_points
-                        and (wall_cell[0]+1,wall_cell[1]) not in wounded_person_points
-                        and (wall_cell[0]-1,wall_cell[1]) not in wounded_person_points
-                        and (wall_cell[0],wall_cell[1]+1) not in wounded_person_points
-                        and (wall_cell[0],wall_cell[1]-1) not in wounded_person_points):
-                    self.grid.update_wall(wall_cell[0], wall_cell[1])
-                    if (wall_cell in self.path_to_target):
-                        self.currently_rescuing = False
 
-        self.grid.update_cell_danger(grid_pos[0], grid_pos[1], -1)
 
-        # Le drone suit le chemin vers sa cible
-        if len(self.path_to_target) > 0:
-            target_direction = np.array(self.grid.grid_cell_to_gps(self.path_to_target[0])) - np.array(self.last_position)
-            target_direction_norm = target_direction / np.linalg.norm(target_direction)
-            angle_to_target = np.arctan2(target_direction_norm[1], target_direction_norm[0])
+        if ((np.isnan(self.last_position[0]) or np.isnan(self.last_position[1])) == False):
     
-            # Calcul de l'intensité de la rotation en fonction de l'angle uniquement
-            angle_diff = angle_to_target - self.last_angle[0]
-            if angle_diff < -np.pi:
-                angle_diff += 2 * np.pi
-            elif angle_diff > np.pi:
-                angle_diff -= 2 * np.pi
-            rotation_intensity = 0.3 * sign(angle_diff) + angle_diff / np.pi
-    
-    
-            # Affectation de la commande de rotation en fonction de l'intensité calculée
-            if rotation_intensity > 0:
-                command["rotation"] = min(rotation_intensity, 1)
+            self.last_position += np.array([np.cos(self.last_angle[0]) * 15, np.sin(self.last_angle[0]) * 15]) 
+            grid_pos = self.grid.gps_to_grid_cell(self.last_position)
+        
+            if not self.currently_rescuing:
+                self.grid.update_cell_danger(grid_pos[0], grid_pos[1], -1, override=True)
+        
+                not_tried_rescue = self.grid.rescue_centers.copy()
+                while(True):
+                    
+                    index = closest_rescue_center_index(not_tried_rescue, grid_pos[0], grid_pos[1])
+                    self.target_cell = not_tried_rescue.pop(index)
+                        
+                    self.path_to_target = a_star_rescue(self.grid, grid_pos[0], grid_pos[1], self.target_cell[0], self.target_cell[1])
+                    if not (self.path_to_target is None):
+                            self.currently_rescuing = True
+                            break
+                    
+            command_lidar, collision_lidar, walls = self.process_lidar_sensor(self.lidar())
+            found_wounded, found_rescue_center, command_semantic, rescue_center_points, wounded_person_points = self.process_semantic_sensor(self.semantic())
+            command_comm, drone_cells = self.process_communication_sensor()
+            
+            n = len(drone_cells)
+            for i in range(n):
+                drone_cells.append((drone_cells[i][0]+1, drone_cells[i][1]))
+                drone_cells.append((drone_cells[i][0]+1, drone_cells[i][1]+1))
+                drone_cells.append((drone_cells[i][0]+1, drone_cells[i][1]-1))
+                drone_cells.append((drone_cells[i][0]-1, drone_cells[i][1]))
+                drone_cells.append((drone_cells[i][0]-1, drone_cells[i][1]+1))
+                drone_cells.append((drone_cells[i][0]-1, drone_cells[i][1]-1))
+                drone_cells.append((drone_cells[i][0], drone_cells[i][1]+1))
+                drone_cells.append((drone_cells[i][0], drone_cells[i][1]-1))
+                self.grid.update_cell_danger(drone_cells[i][0], drone_cells[i][1], -1, override=True)
+
+
+            if (len(walls) > 0):
+                for i in range(len(walls)):
+                    wall_cell = self.grid.gps_to_grid_cell(walls[i])
+                    if (self.grid.map[wall_cell[0]][wall_cell[1]] != 1 
+                            and wall_cell not in wounded_person_points
+                            and (wall_cell[0]+1,wall_cell[1]) not in wounded_person_points
+                            and (wall_cell[0]-1,wall_cell[1]) not in wounded_person_points
+                            and (wall_cell[0],wall_cell[1]+1) not in wounded_person_points
+                            and (wall_cell[0],wall_cell[1]-1) not in wounded_person_points
+                            and wall_cell not in drone_cells):
+                        self.grid.update_wall(wall_cell[0], wall_cell[1])
+
+                for i in range(len(walls)):
+                        wall_cell = self.grid.gps_to_grid_cell(walls[i])
+                        if ((wall_cell in self.path_to_target) and (wall_cell not in self.grid.rescue_centers) and (wall_cell not in drone_cells)):
+                            index_of_wall = self.path_to_target.index(wall_cell)
+                            new_path = self.path_to_target[index_of_wall+2:]
+                            next_cell = self.path_to_target[index_of_wall+1]
+                            not_tried_rescue = self.grid.rescue_centers.copy()
+                            while(True):
+                                self.path_to_target = a_star_rescue(self.grid, grid_pos[0], grid_pos[1], next_cell[0], next_cell[1])
+                                if not (self.path_to_target is None):
+                                    break
+                                index = closest_rescue_center_index(not_tried_rescue, grid_pos[0], grid_pos[1])
+                                self.target_cell = not_tried_rescue.pop(index)
+                                next_cell = self.target_cell
+                                new_path = []
+                            self.path_to_target = self.path_to_target + new_path
+
+            self.grid.update_cell_danger(grid_pos[0], grid_pos[1], -1)
+
+            # Le drone suit le chemin vers sa cible
+            if len(self.path_to_target) > 0:
+                target_direction = np.array(self.grid.grid_cell_to_gps(self.path_to_target[0])) - np.array(self.last_position)
+                target_direction_norm = target_direction / np.linalg.norm(target_direction)
+                angle_to_target = np.arctan2(target_direction_norm[1], target_direction_norm[0])
+        
+                # Calcul de l'intensité de la rotation en fonction de l'angle uniquement
+                angle_diff = angle_to_target - self.last_angle[0]
+                if angle_diff < -np.pi:
+                    angle_diff += 2 * np.pi
+                elif angle_diff > np.pi:
+                    angle_diff -= 2 * np.pi
+                rotation_intensity = 0.3 * sign(angle_diff) + angle_diff / np.pi
+        
+        
+                # Affectation de la commande de rotation en fonction de l'intensité calculée
+                if rotation_intensity > 0:
+                    command["rotation"] = min(rotation_intensity, 1)
+                else:
+                    command["rotation"] = max(rotation_intensity, -1)
+
+                if self.gps_is_disabled():
+                    command["forward"] = min(1, 0.1 + np.linalg.norm(target_direction)/200)
+                else:
+                    command["forward"] = min(1, 0.2 + np.linalg.norm(target_direction)/100)
+                if np.linalg.norm(target_direction) < 50:
+                    self.path_to_target.pop(0)
+        
             else:
-                command["rotation"] = max(rotation_intensity, -1)
-
-            if self.gps_is_disabled():
-                command["forward"] = min(1, 0.1 + np.linalg.norm(target_direction)/200)
-            else:
-                command["forward"] = min(1, 0.2 + np.linalg.norm(target_direction)/100)
-            if np.linalg.norm(target_direction) < 50:
-                self.path_to_target.pop(0)
-    
-        else:
-            self.currently_rescuing = False
-    
-        command["grasper"] = 1
+                self.currently_rescuing = False
+        
+            command["grasper"] = 1
     
         return False, command
     
@@ -379,18 +519,10 @@ class MyDroneV5(DroneAbstract):
         ray_angles = the_lidar_sensor.ray_angles
         size = the_lidar_sensor.resolution
 
-        far_angle_raw = 0
-        near_angle_raw = 0
-        min_dist = 1000
         collision_points = []
 
         
         if size != 0:
-            # far_angle_raw : angle with the longer distance
-            far_angle_raw = ray_angles[np.argmax(values)]
-            min_dist = min(values)
-            # near_angle_raw : angle with the nearest distance
-            near_angle_raw = ray_angles[np.argmin(values)]
 
             for i in range(size):
                 if values[i] < 175:
@@ -398,22 +530,13 @@ class MyDroneV5(DroneAbstract):
                     y = self.last_position[1] + values[i] * np.sin(ray_angles[i] + self.last_angle[0])
                     collision_points.append((x, y))
 
-        far_angle = far_angle_raw
-        # If far_angle_raw is small then far_angle = 0
-        if abs(far_angle) < 1 / 180 * np.pi:
-            far_angle = 0.0
-
-        near_angle = near_angle_raw
-        far_angle = normalize_angle(far_angle)
 
         return command, False, collision_points
     
 
 
     def process_semantic_sensor(self, the_semantic_sensor):
-        """
-        According to his state in the state machine, the Drone will move towards a wound person or the rescue center
-        """
+
         command = {"forward": 0.5,
                    "lateral": 0.0,
                    "rotation": 0.0}
@@ -442,7 +565,7 @@ class MyDroneV5(DroneAbstract):
                     x = self.last_position[0] + data.distance * np.cos(data.angle + self.last_angle[0])
                     y = self.last_position[1] + data.distance * np.sin(data.angle + self.last_angle[0])
                     rescue_center_points.append((x, y))
-                
+             
 
                 if data.entity_type == DroneSemanticSensor.TypeEntity.WOUNDED_PERSON and not data.grasped:
                     found_wounded = True
@@ -451,7 +574,7 @@ class MyDroneV5(DroneAbstract):
                     scores.append((v, data.angle, data.distance))
                     x = self.last_position[0] + data.distance * np.cos(data.angle + self.last_angle[0])
                     y = self.last_position[1] + data.distance * np.sin(data.angle + self.last_angle[0])
-                    wounded_person_points.append((x, y))
+                    wounded_person_points.append(self.grid.gps_to_grid_cell((x, y)))
 
             for score in scores:
                 if score[0] < best_score:
@@ -474,16 +597,42 @@ class MyDroneV5(DroneAbstract):
             if abs(a) == 1:
                 command["forward"] = 0.2
 
-        """
-        if found_rescue_center and is_near:
-            command["forward"] = 0
-            command["rotation"] = random.uniform(0.1, 1)
-        """
     
         return found_wounded, found_rescue_center, command, rescue_center_points, wounded_person_points
     
 
+    def process_communication_sensor(self):
 
+        command_comm = {"forward": 0.0,
+                        "lateral": 0.0,
+                        "rotation": 0.0}
+
+        drone_cells = []
+
+        if(self.step_count > 1):
+
+            if self.communicator:
+                received_messages = self.communicator.received_messages
+
+            
+        
+            if(self.identifier == 9):
+                for msg in received_messages:
+                    received_id, received_grid, received_pos = msg[1]
+                    if(self.step_count % 10 == 0):
+                        self.grid = merge_grid(self.grid, received_grid)
+            else:
+                for msg in received_messages:
+                    received_id, received_grid, received_pos = msg[1]
+                    drone_cells.append(received_pos)
+                    
+                    if(received_id == 9):
+                        if(self.step_count % 10 == 0):
+                            self.grid = merge_grid(self.grid, received_grid) 
+
+        return command_comm, drone_cells
+
+"""
     def process_communication_sensor(self):
         found_drone = False
         command_comm = {"forward": 0.0,
@@ -596,3 +745,4 @@ class MyDroneV5(DroneAbstract):
                 command_comm["lateral"] = 0.5 * (lat1 + lat2)
 
         return found_drone, command_comm
+"""

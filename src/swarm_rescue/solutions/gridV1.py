@@ -2,6 +2,7 @@ import heapq
 import random
 import math
 
+
 import numpy as np
 
 
@@ -120,7 +121,7 @@ class GridMap:
         return (x, y)
 
     
-import math
+
 
 def closest_rescue_center_index(rescue_centers, x, y):
     if len(rescue_centers) == 0:
@@ -205,7 +206,7 @@ def a_star(grid_map, start_x, start_y, end_x, end_y):
 """
 
 
-def a_star(grid_map, start_x, start_y, end_x, end_y, max_distance):
+def a_star(grid_map, end_x, end_y, start_x, start_y, max_distance):
     # Création des noeuds de départ et d'arrivée
     start_node = Node(start_x, start_y)
     end_node = Node(end_x, end_y)
@@ -227,8 +228,18 @@ def a_star(grid_map, start_x, start_y, end_x, end_y, max_distance):
                 path.append((current_node.x, current_node.y))
                 current_node = current_node.parent
             path.append((start_x, start_y))
-            return list(reversed(path))
+            return list(path)
         
+        if grid_map.map[current_node.x][current_node.y] == -1:
+            path1 = []
+            path2 = a_star_rescue(grid_map, end_x, end_y, current_node.x, current_node.y)
+            while current_node.parent:
+                path1.append((current_node.x, current_node.y))
+                current_node = current_node.parent
+            path1.append((start_x, start_y))
+            return path2 + list(path1)
+
+
         # Ajout du noeud courant à l'ensemble fermé
         closed_set.add((current_node.x, current_node.y))
         

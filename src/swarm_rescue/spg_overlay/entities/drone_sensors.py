@@ -58,7 +58,8 @@ class DroneGPS(InternalSensor, ABC):
         Overload of an internal function of _apply_noise of the class InternalSensor
         We use a noise that follow an autoregressive model of order 1 : https://en.wikipedia.org/wiki/Autoregressive_model#AR(1)
         """
-        self._values = self._noise_model.add_noise(self._values)
+        #self._values = self._noise_model.add_noise(self._values)
+        return
 
     def is_disabled(self):
         return self._disabled
